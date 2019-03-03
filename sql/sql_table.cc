@@ -7923,6 +7923,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   Field **f_ptr,*field;
   MY_BITMAP *dropped_fields= NULL; // if it's NULL - no dropped fields
   bool drop_period= false;
+  bool long_hash_key= false;
   DBUG_ENTER("mysql_prepare_alter_table");
 
   /*
@@ -8299,10 +8300,14 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   */
   for (uint i=0 ; i < table->s->keys ; i++,key_info++)
   {
+    long_hash_key= false;
     if (key_info->flags & HA_INVISIBLE_KEY)
       continue;
     if (key_info->algorithm == HA_KEY_ALG_LONG_HASH)
+    {
       setup_keyinfo_hash(key_info);
+      long_hash_key= true;
+    }
     const char *key_name= key_info->name.str;
     Alter_drop *drop;
     drop_it.rewind();
@@ -8476,8 +8481,12 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
                    &key_parts, key_info->option_list, DDL_options());
       new_key_list.push_back(key, thd->mem_root);
     }
-    if (key_info->algorithm == HA_KEY_ALG_LONG_HASH)
+    if (long_hash_key)
+    {
+      key_info->algorithm= HA_KEY_ALG_LONG_HASH;
+      key_info->flags&= ~HA_NOSAME;
       re_setup_keyinfo_hash(key_info);
+    }
   }
   {
     Key *key;
