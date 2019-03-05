@@ -129,3 +129,10 @@ Comment
 Index_comment	
 ALTER TABLE t1 ADD INDEX (pk);
 DROP TABLE t1;
+CREATE TABLE t1 (f VARCHAR(4096), UNIQUE(f)) ENGINE=InnoDB;
+ALTER TABLE t1 DROP KEY f, ADD INDEX idx1(f), ALGORITHM=INSTANT;
+ERROR 0A000: ALGORITHM=INSTANT is not supported. Reason: ADD INDEX. Try ALGORITHM=NOCOPY
+ALTER TABLE t1 ADD KEY idx2(f);
+Warnings:
+Warning	1071	Specified key was too long; max key length is 3072 bytes
+DROP TABLE t1;

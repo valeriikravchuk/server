@@ -150,3 +150,13 @@ CREATE TABLE t1 (pk INT, PRIMARY KEY USING HASH (pk)) ENGINE=InnoDB;
 --query_vertical show keys from t1;
 ALTER TABLE t1 ADD INDEX (pk);
 DROP TABLE t1;
+
+#
+# MDEV-18809 Server crash in fields_in_hash_keyinfo or Assertion `key_info->key_part->field->flags
+# & (1<< 30)' failed in setup_keyinfo_hash
+#
+CREATE TABLE t1 (f VARCHAR(4096), UNIQUE(f)) ENGINE=InnoDB;
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 DROP KEY f, ADD INDEX idx1(f), ALGORITHM=INSTANT;
+ALTER TABLE t1 ADD KEY idx2(f);
+DROP TABLE t1;

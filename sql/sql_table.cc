@@ -8304,11 +8304,6 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     long_hash_key= false;
     if (key_info->flags & HA_INVISIBLE_KEY)
       continue;
-    if (key_info->algorithm == HA_KEY_ALG_LONG_HASH)
-    {
-      setup_keyinfo_hash(key_info);
-      long_hash_key= true;
-    }
     const char *key_name= key_info->name.str;
     Alter_drop *drop;
     drop_it.rewind();
@@ -8339,6 +8334,11 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       continue;
     }
 
+    if (key_info->algorithm == HA_KEY_ALG_LONG_HASH)
+    {
+      setup_keyinfo_hash(key_info);
+      long_hash_key= true;
+    }
     const char *dropped_key_part= NULL;
     KEY_PART_INFO *key_part= key_info->key_part;
     key_parts.empty();
