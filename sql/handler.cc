@@ -6522,6 +6522,26 @@ static int wsrep_after_row(THD *thd)
 }
 #endif /* WITH_WSREP */
 
+/*
+  Long Unique can have virtual fields. But when we receive record from
+  ha_index_read_map it does not have vfield values. So we need to update it.
+  IN   table       Table Object
+  IN   handler     Handler Object
+  OUT  updated     Set to true on successful update
+*/
+static void update_table_vcol(TABLE *table, handler *h, bool& updated)
+{
+  uint length= table->s->reclength;
+  uchar temp_record[length];
+  memcpy(temp_record, table->record[0], length);
+  restore_record(table, check_unique_buf);
+  if (!table->update_virtual_fields(h, VCOL_UPDATE_FOR_READ))
+    updated= true;
+  store_record(table, check_unique_buf);
+  memcpy(table->record[0], temp_record,  length);
+
+}
+
 static int check_duplicate_long_entry_key(TABLE *table, handler *h,
                                           uchar *new_rec, uint key_no)
 {
@@ -6556,6 +6576,7 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h,
     Item_func_hash * temp= (Item_func_hash *)hash_field->vcol_info->expr;
     Item ** arguments= temp->arguments();
     uint arg_count= temp->argument_count();
+    bool table_vcol_updated= false;
     do
     {
       my_ptrdiff_t diff= table->check_unique_buf - new_rec;
@@ -6568,6 +6589,8 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h,
         if (arguments[j]->type() == Item::FIELD_ITEM)
         {
           t_field= static_cast<Item_field *>(arguments[j])->field;
+          if (t_field->vcol_info && !table_vcol_updated)
+            update_table_vcol(table, h, table_vcol_updated);
           if (t_field->cmp_offset(diff))
             is_same= false;
         }
@@ -6577,6 +6600,8 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h,
           DBUG_ASSERT(!my_strcasecmp(system_charset_info, "left", fnc->func_name()));
           DBUG_ASSERT(fnc->arguments()[0]->type() == Item::FIELD_ITEM);
           t_field= static_cast<Item_field *>(fnc->arguments()[0])->field;
+          if (t_field->vcol_info && !table_vcol_updated)
+            update_table_vcol(table, h, table_vcol_updated);
           uint length= (uint)fnc->arguments()[1]->val_int();
           if (t_field->cmp_max(t_field->ptr, t_field->ptr + diff, length))
             is_same= false;
