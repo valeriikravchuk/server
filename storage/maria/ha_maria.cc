@@ -3457,6 +3457,13 @@ int maria_checkpoint_state(handlerton *hton, bool disabled)
 
 void maria_prepare_for_backup()
 {
+  /* Do a checkpoint, which allows the backup to ignore old log files */
+  ma_checkpoint_execute(CHECKPOINT_FULL, FALSE);
+
+  /*
+    Disable purge of log files during backup as we have to start redo
+    from the above checkpoint.
+  */
   translog_disable_purge();
 }
 
