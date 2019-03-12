@@ -3709,7 +3709,33 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
         Field *field= key_part->field= outparam->field[key_part->fieldnr - 1];
 
         if (field->key_length() != key_part->length &&
-            !(field->flags & BLOB_FLAG))
+            !(field->flags & BLOB_FLAG) &&
+           /*
+             MDEV-18888
+             We will not make copy of the field because if we do this this this will
+             make this test case to fail
+             CREATE TABLE t1 (
+               a CHAR(128),
+               b CHAR(128) AS (a),
+               c varchar(5000),
+               UNIQUE(c,b(64))
+             ) ENGINE=InnoDB;
+             And the reason for this is because Item_func_hash will Item_field based on
+             this new field. But if this field is virtual field then since it is created
+             before calling parse_vcol_defs so it does not have field->vcol_info->expr item
+             initiated. And this will make segfault when field->vcol_info->expr is accessed.
+             So the question may be why similar unique with just virtual column is not crashing ?
+             CREATE TABLE t2 (
+              a CHAR(128),
+              b CHAR(128) AS (a),
+              c char(128) as (a+b),
+              UNIQUE(a, c(64))
+             ) ENGINE=InnoDB;
+             In this case also new prefix field will be created whose vcol_info->expr will be NULL.
+             But Since this key is not a long unique in innodb_base_col_setup field will be
+             table->field[i] which will have not null vcol_info->expr
+            */
+            key_info->algorithm != HA_KEY_ALG_LONG_HASH)
         {
           /*
             We are using only a prefix of the column as a key:
