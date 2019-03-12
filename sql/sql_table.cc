@@ -55,7 +55,6 @@
 #include "sql_sequence.h"
 #include "tztime.h"
 
-
 #ifdef __WIN__
 #include <io.h>
 #endif
@@ -2299,6 +2298,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
     LEX_CSTRING db= table->db;
     LEX_CUSTRING version;
     handlerton *table_type= 0;
+    LEX_CSTRING partition_engine_name= {NULL, 0};
 
     DBUG_PRINT("table", ("table_l: '%s'.'%s'  table: %p  s: %p",
                          table->db.str, table->table_name.str,  table->table,
@@ -2422,8 +2422,8 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
     DEBUG_SYNC(thd, "rm_table_no_locks_before_delete_table");
     error= 0;
     if (drop_temporary ||
-        (ha_table_exists(thd, &db, &alias, &version, &table_type,
-                         &is_sequence) == 0 &&
+        (ha_table_exists(thd, &db, &alias, &version, &partition_engine_name,
+                         &table_type, &is_sequence) == 0 &&
          table_type == 0) ||
         (!drop_view && (was_view= (table_type == view_pseudo_hton))) ||
         (drop_sequence && !is_sequence))
@@ -2561,8 +2561,11 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
         backup_log_info ddl_log;
         bzero(&ddl_log, sizeof(ddl_log));
         ddl_log.query= { C_STRING_WITH_LEN("DROP") };
-        lex_string_set(&ddl_log.org_storage_engine_name,
-                       ha_resolve_storage_engine_name(table_type));
+        if ((ddl_log.org_partitioned= (partition_engine_name.str != 0)))
+          ddl_log.org_storage_engine_name= partition_engine_name;
+        else
+          lex_string_set(&ddl_log.org_storage_engine_name,
+                         ha_resolve_storage_engine_name(table_type));
         ddl_log.org_database=     table->db;
         ddl_log.org_table=        table->table_name;
         ddl_log.org_table_id=     version;
@@ -2709,7 +2712,9 @@ end:
 
 bool log_drop_table(THD *thd, const LEX_CSTRING *db_name,
                     const LEX_CSTRING *table_name,
-                    const LEX_CSTRING *handler_name, const LEX_CUSTRING *id,
+                    const LEX_CSTRING *handler_name,
+                    bool partitioned,
+                    const LEX_CUSTRING *id,
                     bool temporary_table)
 {
   char buff[NAME_LEN*2 + 80];
@@ -2740,6 +2745,7 @@ bool log_drop_table(THD *thd, const LEX_CSTRING *db_name,
     bzero(&ddl_log, sizeof(ddl_log));
     ddl_log.query= { C_STRING_WITH_LEN("DROP_AFTER_CREATE") };
     ddl_log.org_storage_engine_name= *handler_name;
+    ddl_log.org_partitioned=  partitioned;
     ddl_log.org_database=     *db_name;
     ddl_log.org_table=        *table_name;
     ddl_log.org_table_id=     *id;
@@ -4950,8 +4956,7 @@ int create_table_impl(THD *thd, const LEX_CSTRING &orig_db,
     handlerton *db_type;
     if (!internal_tmp_table &&
         ha_table_exists(thd, &db, &table_name,
-                        &create_info->org_tabledef_version,
-                        &db_type))
+                        &create_info->org_tabledef_version, NULL, &db_type))
     {
       if (options.or_replace())
       {
@@ -5345,6 +5350,7 @@ err:
       backup_log_info ddl_log;
       bzero(&ddl_log, sizeof(ddl_log));
       ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
+      ddl_log.org_partitioned= (create_info->db_type == partition_hton);
       ddl_log.org_storage_engine_name= create_info->new_storage_engine_name;
       ddl_log.org_database=     create_table->db;
       ddl_log.org_table=        create_table->table_name;
@@ -5601,7 +5607,9 @@ mysql_rename_table(handlerton *base, const LEX_CSTRING *old_db,
     backup_log_info ddl_log;
     bzero(&ddl_log, sizeof(ddl_log));
     ddl_log.query= { C_STRING_WITH_LEN("RENAME") };
-    lex_string_set(&ddl_log.org_storage_engine_name, file->table_type());
+    ddl_log.org_partitioned=  file->partition_engine();
+    ddl_log.new_partitioned=  ddl_log.org_partitioned;
+    lex_string_set(&ddl_log.org_storage_engine_name, file->real_table_type());
     ddl_log.org_database=     *old_db;
     ddl_log.org_table=        *old_name;
     ddl_log.org_table_id=     *id;
@@ -5963,6 +5971,7 @@ err:
       */
       log_drop_table(thd, &table->db, &table->table_name,
                      &create_info->org_storage_engine_name,
+                     create_info->db_type == partition_hton,
                      &create_info->org_tabledef_version,
                      create_info->tmp_table());
     }
@@ -9153,6 +9162,7 @@ simple_rename_or_index_change(THD *thd, TABLE_LIST *table_list,
   LEX_CUSTRING table_version;
   uchar table_version_buff[MY_UUID_SIZE];
   char storage_engine_buff[NAME_LEN];
+  bool partitioned;
   enum ha_extra_function extra_func= thd->locked_tables_mode
                                        ? HA_EXTRA_NOT_USED
                                        : HA_EXTRA_FORCE_REOPEN;
@@ -9162,8 +9172,9 @@ simple_rename_or_index_change(THD *thd, TABLE_LIST *table_list,
     memcpy(table_version_buff, table->s->tabledef_version.str, MY_UUID_SIZE);
   table_version.str= table_version_buff;
   storage_engine.str= storage_engine_buff;
+  partitioned= table->file->partition_engine();
   storage_engine.length= (strmake(storage_engine_buff,
-                                  table->file->table_type(),
+                                  table->file->real_table_type(),
                                   sizeof(storage_engine_buff)-1) -
                           storage_engine_buff);
 
@@ -9186,6 +9197,7 @@ simple_rename_or_index_change(THD *thd, TABLE_LIST *table_list,
       bzero(&ddl_log, sizeof(ddl_log));
       ddl_log.query= { C_STRING_WITH_LEN("CHANGE_INDEX") };
       ddl_log.org_storage_engine_name= storage_engine;
+      ddl_log.org_partitioned=  partitioned;
       ddl_log.org_database=     table_list->table->s->db;
       ddl_log.org_table=        table_list->table->s->table_name;
       ddl_log.org_table_id=     table_version;
@@ -9978,9 +9990,11 @@ do_continue:;
     update_altered_table(ha_alter_info, altered_table);
 
     /* Remember storage engine name */
+    alter_ctx.tmp_storage_engine_name_partitioned=
+      altered_table->file->partition_engine();
     alter_ctx.tmp_storage_engine_name.length=
       (strmake((char*) alter_ctx.tmp_storage_engine_name.str,
-               altered_table->file->table_type(),
+               altered_table->file->real_table_type(),
                sizeof(alter_ctx.tmp_storage_engine_buff)-1) -
        alter_ctx.tmp_storage_engine_name.str);
 
@@ -10246,9 +10260,11 @@ do_continue:;
   }
 
   /* Remember storage engine name for the new table */
+  alter_ctx.tmp_storage_engine_name_partitioned=
+    new_table->file->partition_engine();
   alter_ctx.tmp_storage_engine_name.length=
     (strmake((char*) alter_ctx.tmp_storage_engine_name.str,
-             new_table->file->table_type(),
+             new_table->file->real_table_type(),
              sizeof(alter_ctx.tmp_storage_engine_buff)-1) -
      alter_ctx.tmp_storage_engine_name.str);
 
@@ -10389,10 +10405,12 @@ end_inplace:
     bzero(&ddl_log, sizeof(ddl_log));
     ddl_log.query= { C_STRING_WITH_LEN("ALTER") };
     ddl_log.org_storage_engine_name= alter_ctx.storage_engine_name;
+    ddl_log.org_partitioned=         alter_ctx.storage_engine_partitioned;
     ddl_log.org_database=            alter_ctx.db;
     ddl_log.org_table=               alter_ctx.table_name,
     ddl_log.org_table_id=            alter_ctx.id;
     ddl_log.new_storage_engine_name= alter_ctx.tmp_storage_engine_name;
+    ddl_log.new_partitioned=    alter_ctx.tmp_storage_engine_name_partitioned;
     ddl_log.new_database=            alter_ctx.new_db;
     ddl_log.new_table=               alter_ctx.new_alias;
     ddl_log.new_table_id=            alter_ctx.tmp_id;
